@@ -1,0 +1,228 @@
+
+# fasta_file, sequence file in fasta format
+# epitope_length, length of predicted epitope (11 ~ 50, default 38)
+# threshhold, score threshold (0 ~ 11, default 11)
+# filter, filter of overlapping epitopes (TRUE or FALSE)
+
+
+tryCatch({
+  library(seqinr)
+}, warning = function(w) {
+  print(paste('w:', w))
+}, error = function(e) {
+  print(paste('e:', e))
+}, finally = {
+})
+tryCatch({
+  library(stringi)
+}, warning = function(w) {
+  print(paste('w:', w))
+}, error = function(e) {
+  print(paste('e:', e))
+}, finally = {
+})
+tryCatch({
+  library(keras)
+}, warning = function(w) {
+  print(paste('w:', w))
+}, error = function(e) {
+  print(paste('e:', e))
+}, finally = {
+})
+tryCatch({
+  library(tensorflow)
+}, warning = function(w) {
+  print(paste('w:', w))
+}, error = function(e) {
+  print(paste('e:', e))
+}, finally = {
+})
+
+model_path = "./dlmodels/"
+args <- commandArgs(TRUE)
+cfile = readline(prompt = "Please enter the file name")
+cfres = paste(cfile, "txt", sep = ".")
+eplen = readline(prompt = "Please enter the desired predicted epitope length")
+thres = readline(prompt = "Please enter the the threshold[Minimum number of models to classify the result as epitope")
+filt = 1
+
+if (thres < 0 || thres > 11) {
+  cat("The score threshold should be an integer in 0 ~ 11.\n")
+  q(save = "no")
+}
+if (eplen < 11 || thres > 50) {
+  cat("The epitope length should be an integer in 11 ~ 50.\n")
+  q(save = "no")
+}
+
+mod_n  = 11
+for (i in 1:mod_n) {
+  assign(paste("model", i, sep = ""),
+         load_model_hdf5(
+           filepath = stri_c(model_path,
+                             "aacom_",
+                             eplen,
+                             "_model_",
+                             i,
+                             ".mod"),
+           compile = TRUE
+         ))
+}
+
+seqs = read.fasta(file = cfile,
+                  seqtype = "AA",
+                  as.string = TRUE)
+
+cat("You want epitopes ",
+    eplen,
+    " AAs long with a threshold >= ",
+    thres,
+    ".\n",
+    sep = "")
+cat(
+  "You want epitopes ",
+  eplen,
+  " AAs long with a threshold >= ",
+  thres,
+  ".\n",
+  sep = "",
+  file = cfres
+)
+
+if (filt) {
+  cat("Filter on.\n")
+  cat("Filter on.\n", file = cfres, append = TRUE)
+} else{
+  cat("Filter off.\n")
+  cat("Filter off.\n", file = cfres, append = TRUE)
+}
+
+cat(format("Seqname", width = 20, justify = "left"),
+    format("No.", width = 6, justify = "left"),
+    format("Start", width = 6, justify = "left"),
+    format("End", width = 6, justify = "left"),
+    format("Sequence", width = (eplen + 2), justify = "left"),
+    format("Score", width = 5, justify = "left")
+)
+cat("\n")
+cat(rep('-', 43 + eplen + 2 + 5), "\n", sep = "")
+cat(format("Seqname", width = 20, justify = "left"),
+    format("No.", width = 6, justify = "left"),
+    format("Start", width = 6, justify = "left"),
+    format("End", width = 6, justify = "left"),
+    format("Sequence", width = (eplen + 2), justify = "left"),
+    format("Score", width = 5, justify = "left"),
+    file = cfres,
+    append = TRUE
+)
+cat("\n", file = cfres, append = TRUE)
+cat(rep('-', 43 + eplen + 2 + 5), "\n", sep = "", file = cfres, append = TRUE)
+
+kmer = 2
+uniqueaa = s2c("ARNDCQEGHILKMFPSTWYV")
+
+for (i in 1:length(seqs)) {
+  seq = toupper(stri_trim(seqs[[i]][1],side="both"))
+  seqname = names(seqs)[i]
+  if (stri_length(seq) < eplen) {
+    cat(seqname, "is shorter than the epitope length!\n")
+    cat(
+      seqname,
+      "is shorter than the epitope length!\n",
+      file = cfres,
+      append = TRUE
+    )
+    next
+  }
+  aa = count(s2c(seq),
+             wordsize = kmer,
+             freq = TRUE,
+             alphabet = uniqueaa)
+  epitope = data.frame(row.names = c("seqname",
+                                     "start",
+                                     "end",
+                                     "sequence",
+                                     names(aa)))
+  for (j in 1:(stri_length(seq) - eplen + 1)) {
+    epitopeseq = stri_sub(seq, from = j, to = j + eplen - 1)
+    epi_mat = count(
+      s2c(epitopeseq),
+      wordsize = kmer,
+      freq = TRUE,
+      alphabet = uniqueaa
+    )
+    xx = c(as.character(seqname),
+           j,
+           j + eplen - 1,
+           as.character(epitopeseq),
+           epi_mat)
+    epitope = cbind(epitope, xx)
+  }
+  epitope = t(epitope)
+  epitope_aa = matrix(as.numeric(epitope[, 5:404]),
+                      nrow = nrow(epitope),
+                      byrow = FALSE)
+  epitope_pred = c()
+  for (j in 1:mod_n) {
+    model = get(paste("model", j, sep = ""))
+    xx = model %>% predict_classes(epitope_aa)
+    epitope_pred = rbind(epitope_pred, xx)
+  }
+  
+  votes  = as.matrix(colSums(epitope_pred))
+  
+  ivotes = which(votes[, 1] >= thres)
+  
+  if (length(ivotes) > 0)
+  {
+    epitope_result = data.frame(
+      seqname = epitope[ivotes, 1],
+      start = as.numeric(epitope[ivotes, 2]),
+      end = as.numeric(epitope[ivotes, 3]),
+      sequence = epitope[ivotes, 4],
+      votes = as.numeric(votes[ivotes])
+    )
+    eri = c(1:nrow(epitope_result))
+    if (filt) {
+      erx = which(epitope_result$start <= epitope_result$end[1])
+      ery = which(epitope_result$votes[erx] == max(epitope_result$votes[erx]))
+      eri = c(round(median(erx[ery])))
+      while (erx[length(erx)] < nrow(epitope_result)) {
+        erx = which(epitope_result$start > epitope_result$end[eri[length(eri)]])
+        if (length(erx) > 0) {
+          erx = erx[which(epitope_result$start[erx] <= epitope_result$end[erx[1]])]
+          ery = which(epitope_result$votes[erx] == max(epitope_result$votes[erx]))
+          eri = c(eri, round(median(erx[ery])))
+        } else{
+          break
+        }
+      }
+    }
+    jx=0
+    for (j in eri) {
+      jx = jx + 1
+      cat(
+        format(substr(as.character(epitope_result$seqname[j]), 0, 20), width = 20, justify = "left"),
+        format(as.character(jx), width = 6, justify = "left"),
+        format(as.character(epitope_result$start[j]), width = 6, justify = "left"),
+        format(as.character(epitope_result$end[j]), width = 6, justify = "left"),
+        format(as.character(epitope_result$sequence[j]), width = (eplen + 2), justify = "left"),
+        format(as.character(epitope_result$votes[j]), width = 5, justify = "left")
+      )
+      cat("\n")
+      cat(
+        format(substr(as.character(epitope_result$seqname[j]), 0, 20), width = 20, justify = "left"),
+        format(as.character(jx), width = 6, justify = "left"),
+        format(as.character(epitope_result$start[j]), width = 6, justify = "left"),
+        format(as.character(epitope_result$end[j]), width = 6, justify = "left"),
+        format(as.character(epitope_result$sequence[j]), width = (eplen + 2), justify = "left"),
+        format(as.character(epitope_result$votes[j]), width = 5, justify = "left"),
+        file = cfres,
+        append = TRUE
+      )
+      cat("\n", file = cfres, append = TRUE)
+    }
+  }
+}
+cat("END\n")
+cat("END\n", file = cfres, append = TRUE)
